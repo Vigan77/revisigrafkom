@@ -1,0 +1,2225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Alakazam - Enhanced WebGL</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: radial-gradient(circle at center, #2d1b69 0%, #1a0f3d 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #info {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 12px;
+            font-size: 13px;
+            border: 2px solid rgba(255,255,255,0.1);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        #info strong {
+            font-size: 16px;
+            color: #ffd700;
+        }
+        .stat {
+            margin-top: 8px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <div id="info">
+        <strong>⭐ ALAKAZAM - Psychic Type</strong><br>
+        <div class="stat">Mouse Drag: Rotate Camera</div>
+        <div class="stat">Mouse Wheel: Zoom In/Out</div>
+        <div class="stat">Space: Change Animation</div>
+        <div class="stat">Hierarchical Model: Active</div>
+    </div>
+
+    <script>
+        // Enhanced Vertex Shader with texture coordinates
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            attribute vec3 aVertexNormal;
+            attribute vec2 aTexCoord;
+
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            uniform mat4 uNormalMatrix;
+
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec2 vTexCoord;
+            varying vec3 vWorldPosition;
+
+            void main() {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                vNormal = (uNormalMatrix * vec4(aVertexNormal, 0.0)).xyz;
+                vPosition = (uModelViewMatrix * aVertexPosition).xyz;
+                vWorldPosition = aVertexPosition.xyz;
+                vTexCoord = aTexCoord;
+            }
+        `;
+
+        // Enhanced Fragment Shader with better lighting
+        const fsSource = `
+            precision mediump float;
+
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec2 vTexCoord;
+            varying vec3 vWorldPosition;
+
+            uniform vec3 uColor;
+            uniform vec3 uSecondaryColor;
+            uniform vec3 uLightPosition;
+            uniform vec3 uAmbientLight;
+            uniform float uShininess;
+            uniform float uMetallic;
+            uniform float uTime;
+            uniform int uMaterialType;
+
+            void main() {
+                vec3 normal = normalize(vNormal);
+                vec3 lightDir = normalize(uLightPosition - vPosition);
+                vec3 viewDir = normalize(-vPosition);
+
+                // Ambient
+                vec3 ambient = uAmbientLight * uColor;
+
+                // Diffuse
+                float diff = max(dot(normal, lightDir), 0.0);
+                vec3 diffuse = uColor * diff * 0.7;
+
+                // Specular (Blinn-Phong)
+                vec3 halfDir = normalize(lightDir + viewDir);
+                float spec = pow(max(dot(normal, halfDir), 0.0), uShininess);
+                vec3 specular = vec3(1.0, 1.0, 1.0) * spec * uMetallic;
+
+                // Rim lighting for cartoon effect
+                float rim = 1.0 - max(dot(viewDir, normal), 0.0);
+                rim = smoothstep(0.6, 1.0, rim);
+                vec3 rimColor = uColor * rim * 0.3;
+
+                vec3 result = ambient + diffuse + specular + rimColor;
+
+                // Material-specific effects
+                if (uMaterialType == 1) { // Metallic spoon
+                    result = mix(result, vec3(0.9, 0.9, 1.0), 0.3);
+                    result += specular * 2.0;
+                } else if (uMaterialType == 2) { // Stripes
+                    float stripePattern = step(0.5, fract(vWorldPosition.y * 3.0));
+                    vec3 stripeColor = mix(uColor, uSecondaryColor, stripePattern);
+                    result = ambient * 1.5 + stripeColor * diff + specular;
+                } else if (uMaterialType == 3) { // Psychic glow
+                    float pulse = sin(uTime * 3.0 + vWorldPosition.y * 2.0) * 0.5 + 0.5;
+                    result += vec3(0.4, 0.0, 0.6) * pulse * 0.3;
+                }
+
+                gl_FragColor = vec4(result, 1.0);
+            }
+        `;
+
+        // Matrix utilities (same as before but optimized)
+        const mat4 = {
+            create: function() {
+                return new Float32Array([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ]);
+            },
+
+            perspective: function(out, fovy, aspect, near, far) {
+                const f = 1.0 / Math.tan(fovy / 2);
+                out[0] = f / aspect; out[1] = 0; out[2] = 0; out[3] = 0;
+                out[4] = 0; out[5] = f; out[6] = 0; out[7] = 0;
+                out[8] = 0; out[9] = 0; out[10] = (far + near) / (near - far); out[11] = -1;
+                out[12] = 0; out[13] = 0; out[14] = (2 * far * near) / (near - far); out[15] = 0;
+                return out;
+            },
+
+            translate: function(out, a, v) {
+                const x = v[0], y = v[1], z = v[2];
+                out[0] = a[0]; out[1] = a[1]; out[2] = a[2]; out[3] = a[3];
+                out[4] = a[4]; out[5] = a[5]; out[6] = a[6]; out[7] = a[7];
+                out[8] = a[8]; out[9] = a[9]; out[10] = a[10]; out[11] = a[11];
+                out[12] = a[0] * x + a[4] * y + a[8] * z + a[12];
+                out[13] = a[1] * x + a[5] * y + a[9] * z + a[13];
+                out[14] = a[2] * x + a[6] * y + a[10] * z + a[14];
+                out[15] = a[3] * x + a[7] * y + a[11] * z + a[15];
+                return out;
+            },
+
+            rotate: function(out, a, angle, axis) {
+                let x = axis[0], y = axis[1], z = axis[2];
+                let len = Math.sqrt(x * x + y * y + z * z);
+                x /= len; y /= len; z /= len;
+
+                const s = Math.sin(angle), c = Math.cos(angle), t = 1 - c;
+                const b00 = x * x * t + c, b01 = y * x * t + z * s, b02 = z * x * t - y * s;
+                const b10 = x * y * t - z * s, b11 = y * y * t + c, b12 = z * y * t + x * s;
+                const b20 = x * z * t + y * s, b21 = y * z * t - x * s, b22 = z * z * t + c;
+
+                const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+                const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+                const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+
+                out[0] = a00 * b00 + a10 * b01 + a20 * b02;
+                out[1] = a01 * b00 + a11 * b01 + a21 * b02;
+                out[2] = a02 * b00 + a12 * b01 + a22 * b02;
+                out[3] = a03 * b00 + a13 * b01 + a23 * b02;
+                out[4] = a00 * b10 + a10 * b11 + a20 * b12;
+                out[5] = a01 * b10 + a11 * b11 + a21 * b12;
+                out[6] = a02 * b10 + a12 * b11 + a22 * b12;
+                out[7] = a03 * b10 + a13 * b11 + a23 * b12;
+                out[8] = a00 * b20 + a10 * b21 + a20 * b22;
+                out[9] = a01 * b20 + a11 * b21 + a21 * b22;
+                out[10] = a02 * b20 + a12 * b21 + a22 * b22;
+                out[11] = a03 * b20 + a13 * b21 + a23 * b22;
+                out[12] = a[12]; out[13] = a[13]; out[14] = a[14]; out[15] = a[15];
+                return out;
+            },
+
+            scale: function(out, a, v) {
+                const x = v[0], y = v[1], z = v[2];
+                out[0] = a[0] * x; out[1] = a[1] * x; out[2] = a[2] * x; out[3] = a[3] * x;
+                out[4] = a[4] * y; out[5] = a[5] * y; out[6] = a[6] * y; out[7] = a[7] * y;
+                out[8] = a[8] * z; out[9] = a[9] * z; out[10] = a[10] * z; out[11] = a[11] * z;
+                out[12] = a[12]; out[13] = a[13]; out[14] = a[14]; out[15] = a[15];
+                return out;
+            },
+
+            multiply: function(out, a, b) {
+                const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+                const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+                const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+                const a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+
+                let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+                out[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+                out[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+                out[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+                out[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+                b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+                out[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+                out[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+                out[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+                out[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+                b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+                out[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+                out[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+                out[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+                out[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+
+                b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+                out[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+                out[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+                out[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+                out[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+                return out;
+            },
+
+            invert: function(out, a) {
+                const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+                const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+                const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+                const a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+
+                const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10;
+                const b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+                const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+                const b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+                const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31;
+                const b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+
+                let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+                if (!det) return null;
+                det = 1.0 / det;
+
+                out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+                out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+                out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+                out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+                out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+                out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+                out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+                out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+                out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+                out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+                out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+                out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+                out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+                out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+                out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+                out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+                return out;
+            },
+
+            transpose: function(out, a) {
+                if (out === a) {
+                    const a01 = a[1], a02 = a[2], a03 = a[3];
+                    const a12 = a[6], a13 = a[7], a23 = a[11];
+                    out[1] = a[4]; out[2] = a[8]; out[3] = a[12];
+                    out[4] = a01; out[6] = a[9]; out[7] = a[13];
+                    out[8] = a02; out[9] = a12; out[11] = a[14];
+                    out[12] = a03; out[13] = a13; out[14] = a23;
+                } else {
+                    out[0] = a[0]; out[1] = a[4]; out[2] = a[8]; out[3] = a[12];
+                    out[4] = a[1]; out[5] = a[5]; out[6] = a[9]; out[7] = a[13];
+                    out[8] = a[2]; out[9] = a[6]; out[10] = a[10]; out[11] = a[14];
+                    out[12] = a[3]; out[13] = a[7]; out[14] = a[11]; out[15] = a[15];
+                }
+                return out;
+            },
+
+            copy: function(out, a) {
+                for(let i = 0; i < 16; i++) out[i] = a[i];
+                return out;
+            }
+        };
+
+        // Enhanced geometry creation functions
+        function createSphere(radius, latBands, longBands) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            for (let lat = 0; lat <= latBands; lat++) {
+                const theta = lat * Math.PI / latBands;
+                const sinTheta = Math.sin(theta);
+                const cosTheta = Math.cos(theta);
+
+                for (let long = 0; long <= longBands; long++) {
+                    const phi = long * 2 * Math.PI / longBands;
+                    const sinPhi = Math.sin(phi);
+                    const cosPhi = Math.cos(phi);
+
+                    const x = cosPhi * sinTheta;
+                    const y = cosTheta;
+                    const z = sinPhi * sinTheta;
+
+                    normals.push(x, y, z);
+                    positions.push(radius * x, radius * y, radius * z);
+                    texCoords.push(long / longBands, lat / latBands);
+                }
+            }
+
+            for (let lat = 0; lat < latBands; lat++) {
+                for (let long = 0; long < longBands; long++) {
+                    const first = lat * (longBands + 1) + long;
+                    const second = first + longBands + 1;
+                    indices.push(first, second, first + 1);
+                    indices.push(second, second + 1, first + 1);
+                }
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        function createEllipsoid(rx, ry, rz, latBands, longBands) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            for (let lat = 0; lat <= latBands; lat++) {
+                const theta = lat * Math.PI / latBands;
+                const sinTheta = Math.sin(theta);
+                const cosTheta = Math.cos(theta);
+
+                for (let long = 0; long <= longBands; long++) {
+                    const phi = long * 2 * Math.PI / longBands;
+                    const sinPhi = Math.sin(phi);
+                    const cosPhi = Math.cos(phi);
+
+                    const x = cosPhi * sinTheta;
+                    const y = cosTheta;
+                    const z = sinPhi * sinTheta;
+
+                    normals.push(x, y, z);
+                    positions.push(rx * x, ry * y, rz * z);
+                    texCoords.push(long / longBands, lat / latBands);
+                }
+            }
+
+            for (let lat = 0; lat < latBands; lat++) {
+                for (let long = 0; long < longBands; long++) {
+                    const first = lat * (longBands + 1) + long;
+                    const second = first + longBands + 1;
+                    indices.push(first, second, first + 1);
+                    indices.push(second, second + 1, first + 1);
+                }
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        function createCylinder(radiusTop, radiusBottom, height, segments, heightSegments = 1) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            for (let y = 0; y <= heightSegments; y++) {
+                const v = y / heightSegments;
+                const yPos = (v - 0.5) * height;
+                const radius = radiusBottom + (radiusTop - radiusBottom) * v;
+
+                for (let i = 0; i <= segments; i++) {
+                    const u = i / segments;
+                    const angle = u * Math.PI * 2;
+                    const x = Math.cos(angle);
+                    const z = Math.sin(angle);
+
+                    positions.push(radius * x, yPos, radius * z);
+                    normals.push(x, 0, z);
+                    texCoords.push(u, v);
+                }
+            }
+
+            for (let y = 0; y < heightSegments; y++) {
+                for (let i = 0; i < segments; i++) {
+                    const i0 = y * (segments + 1) + i;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + segments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        function createCone(radius, height, segments) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            // Tip
+            positions.push(0, height / 2, 0);
+            normals.push(0, 1, 0);
+            texCoords.push(0.5, 0);
+
+            // Base circle
+            for (let i = 0; i <= segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                const x = Math.cos(angle) * radius;
+                const z = Math.sin(angle) * radius;
+
+                positions.push(x, -height / 2, z);
+
+                const nx = x / radius;
+                const nz = z / radius;
+                const len = Math.sqrt(nx * nx + 0.5 * 0.5 + nz * nz);
+                normals.push(nx / len, 0.5 / len, nz / len);
+                texCoords.push(i / segments, 1);
+            }
+
+            // Indices for cone sides
+            for (let i = 0; i < segments; i++) {
+                indices.push(0, i + 1, i + 2);
+            }
+
+            // Base cap
+            const baseCenter = positions.length / 3;
+            positions.push(0, -height / 2, 0);
+            normals.push(0, -1, 0);
+            texCoords.push(0.5, 0.5);
+
+            for (let i = 0; i < segments; i++) {
+                indices.push(baseCenter, i + 2, i + 1);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create cone with rounded (blunt) tip instead of sharp point
+        function createRoundedCone(radius, height, segments, tipRoundness = 0.15) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            // Instead of single sharp point, create a small rounded cap at the tip
+            const tipRadius = radius * tipRoundness; // Small radius for rounded tip
+            const heightSegments = 10; // More segments for smooth taper
+
+            // Generate cone body with rounded tip
+            for (let y = 0; y <= heightSegments; y++) {
+                const v = y / heightSegments;
+                const yPos = (v - 0.5) * height;
+
+                // Radius tapers to tipRadius (not zero) for rounded effect
+                let currentRadius;
+                if (v < 0.85) {
+                    // Normal cone taper
+                    currentRadius = radius * (1 - v);
+                } else {
+                    // Round off the last 15% with smooth curve
+                    const roundFactor = (v - 0.85) / 0.15;
+                    const taper = 1 - 0.85;
+                    currentRadius = radius * (taper - taper * Math.sin(roundFactor * Math.PI / 2)) + tipRadius;
+                }
+
+                for (let i = 0; i <= segments; i++) {
+                    const angle = (i / segments) * Math.PI * 2;
+                    const x = Math.cos(angle) * currentRadius;
+                    const z = Math.sin(angle) * currentRadius;
+
+                    positions.push(x, yPos, z);
+
+                    // Calculate normals for smooth lighting
+                    const nx = Math.cos(angle);
+                    const nz = Math.sin(angle);
+                    const ny = currentRadius / height;
+                    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    normals.push(nx / len, ny / len, nz / len);
+
+                    texCoords.push(i / segments, v);
+                }
+            }
+
+            // Generate indices for sides
+            for (let y = 0; y < heightSegments; y++) {
+                for (let i = 0; i < segments; i++) {
+                    const i0 = y * (segments + 1) + i;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + segments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            // Base cap
+            const baseCenter = positions.length / 3;
+            positions.push(0, -height / 2, 0);
+            normals.push(0, -1, 0);
+            texCoords.push(0.5, 0.5);
+
+            const baseStart = 0; // First ring
+            for (let i = 0; i < segments; i++) {
+                indices.push(baseCenter, baseStart + i, baseStart + i + 1);
+            }
+
+            // Tip cap - close the rounded tip end
+            const tipCenter = positions.length / 3;
+            positions.push(0, height / 2, 0);
+            normals.push(0, 1, 0);
+            texCoords.push(0.5, 0.5);
+
+            const tipStart = heightSegments * (segments + 1); // Last ring
+            for (let i = 0; i < segments; i++) {
+                indices.push(tipCenter, tipStart + i + 1, tipStart + i);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create trapezoid/inverted triangle torso for Alakazam's angular body shape
+        // Wide at shoulders (top), narrow at waist (bottom)
+        function createTrapezoidTorso(topWidth, topDepth, bottomWidth, bottomDepth, height, segments) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+            const heightSegments = 8; // Vertical segments for smooth shape
+
+            // Create vertices layer by layer from bottom to top
+            for (let y = 0; y <= heightSegments; y++) {
+                const v = y / heightSegments; // 0 at bottom, 1 at top
+                const yPos = (v - 0.5) * height; // Center vertically
+
+                // Interpolate width and depth from bottom to top
+                const currentWidth = bottomWidth + (topWidth - bottomWidth) * v;
+                const currentDepth = bottomDepth + (topDepth - bottomDepth) * v;
+
+                // Create rectangular cross-section at this height
+                for (let i = 0; i <= segments; i++) {
+                    const u = i / segments;
+
+                    let x, z, nx, nz;
+
+                    // Create rectangle perimeter (4 sides)
+                    if (i < segments / 4) {
+                        // Front edge
+                        const t = (i / (segments / 4));
+                        x = (t - 0.5) * currentWidth;
+                        z = currentDepth / 2;
+                        nx = 0;
+                        nz = 1;
+                    } else if (i < segments / 2) {
+                        // Right edge
+                        const t = ((i - segments / 4) / (segments / 4));
+                        x = currentWidth / 2;
+                        z = (0.5 - t) * currentDepth;
+                        nx = 1;
+                        nz = 0;
+                    } else if (i < segments * 3 / 4) {
+                        // Back edge
+                        const t = ((i - segments / 2) / (segments / 4));
+                        x = (0.5 - t) * currentWidth;
+                        z = -currentDepth / 2;
+                        nx = 0;
+                        nz = -1;
+                    } else {
+                        // Left edge
+                        const t = ((i - segments * 3 / 4) / (segments / 4));
+                        x = -currentWidth / 2;
+                        z = (-0.5 + t) * currentDepth;
+                        nx = -1;
+                        nz = 0;
+                    }
+
+                    positions.push(x, yPos, z);
+
+                    // Normals need to account for the taper angle
+                    const taperAngleX = (topWidth - bottomWidth) / height;
+                    const taperAngleZ = (topDepth - bottomDepth) / height;
+                    const adjustedNx = nx - taperAngleX * Math.abs(nz);
+                    const adjustedNz = nz - taperAngleZ * Math.abs(nx);
+                    const len = Math.sqrt(adjustedNx * adjustedNx + adjustedNz * adjustedNz + 0.1);
+                    normals.push(adjustedNx / len, 0.1 / len, adjustedNz / len);
+
+                    texCoords.push(u, v);
+                }
+            }
+
+            // Generate indices for sides
+            for (let y = 0; y < heightSegments; y++) {
+                for (let i = 0; i < segments; i++) {
+                    const i0 = y * (segments + 1) + i;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + segments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            // Bottom cap (narrow waist)
+            const bottomCenter = positions.length / 3;
+            positions.push(0, -height / 2, 0);
+            normals.push(0, -1, 0);
+            texCoords.push(0.5, 0.5);
+
+            const bottomStart = 0;
+            for (let i = 0; i < segments; i++) {
+                indices.push(bottomCenter, bottomStart + i, bottomStart + i + 1);
+            }
+
+            // Top cap (wide shoulders)
+            const topCenter = positions.length / 3;
+            positions.push(0, height / 2, 0);
+            normals.push(0, 1, 0);
+            texCoords.push(0.5, 0.5);
+
+            const topStart = heightSegments * (segments + 1);
+            for (let i = 0; i < segments; i++) {
+                indices.push(topCenter, topStart + i + 1, topStart + i);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        function createTorus(majorRadius, minorRadius, majorSegments, minorSegments) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            for (let i = 0; i <= majorSegments; i++) {
+                const u = i / majorSegments * Math.PI * 2;
+                const cu = Math.cos(u);
+                const su = Math.sin(u);
+
+                for (let j = 0; j <= minorSegments; j++) {
+                    const v = j / minorSegments * Math.PI * 2;
+                    const cv = Math.cos(v);
+                    const sv = Math.sin(v);
+
+                    const x = (majorRadius + minorRadius * cv) * cu;
+                    const y = minorRadius * sv;
+                    const z = (majorRadius + minorRadius * cv) * su;
+
+                    positions.push(x, y, z);
+
+                    const nx = cv * cu;
+                    const ny = sv;
+                    const nz = cv * su;
+                    normals.push(nx, ny, nz);
+                    texCoords.push(i / majorSegments, j / minorSegments);
+                }
+            }
+
+            for (let i = 0; i < majorSegments; i++) {
+                for (let j = 0; j < minorSegments; j++) {
+                    const a = i * (minorSegments + 1) + j;
+                    const b = a + minorSegments + 1;
+
+                    indices.push(a, b, a + 1);
+                    indices.push(b, b + 1, a + 1);
+                }
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create sharp triangular eye (like right triangle)
+        function createTriangularEye() {
+            const positions = [], normals = [], texCoords = [], indices = [];
+            const depth = 0.2;
+
+            // Define triangle vertices (right triangle pointing upward)
+            // Front face triangle
+            const v0 = [-0.4, -0.5, depth];  // Bottom left
+            const v1 = [0.4, -0.5, depth];   // Bottom right
+            const v2 = [0.4, 0.5, depth];    // Top right (sharp corner)
+
+            // Back face triangle (for thickness)
+            const v3 = [-0.4, -0.5, -depth]; // Bottom left back
+            const v4 = [0.4, -0.5, -depth];  // Bottom right back
+            const v5 = [0.4, 0.5, -depth];   // Top right back
+
+            // Front face
+            positions.push(...v0, ...v1, ...v2);
+            normals.push(0, 0, 1, 0, 0, 1, 0, 0, 1);
+            texCoords.push(0, 0, 1, 0, 1, 1);
+            indices.push(0, 1, 2);
+
+            // Back face
+            positions.push(...v3, ...v4, ...v5);
+            normals.push(0, 0, -1, 0, 0, -1, 0, 0, -1);
+            texCoords.push(0, 0, 1, 0, 1, 1);
+            indices.push(3, 5, 4);
+
+            // Bottom edge (v0-v1-v4-v3)
+            const baseIdx = positions.length / 3;
+            positions.push(...v0, ...v1, ...v4, ...v3);
+            normals.push(0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0);
+            texCoords.push(0, 0, 1, 0, 1, 1, 0, 1);
+            indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+            indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+
+            // Right edge (v1-v2-v5-v4)
+            const rightIdx = positions.length / 3;
+            positions.push(...v1, ...v2, ...v5, ...v4);
+            normals.push(1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0);
+            texCoords.push(0, 0, 1, 0, 1, 1, 0, 1);
+            indices.push(rightIdx, rightIdx + 1, rightIdx + 2);
+            indices.push(rightIdx, rightIdx + 2, rightIdx + 3);
+
+            // Diagonal edge (v2-v0-v3-v5)
+            const diagIdx = positions.length / 3;
+            positions.push(...v2, ...v0, ...v3, ...v5);
+            const nx = 0.6, ny = 0.8; // Diagonal normal
+            normals.push(-nx, ny, 0, -nx, ny, 0, -nx, ny, 0, -nx, ny, 0);
+            texCoords.push(0, 0, 1, 0, 1, 1, 0, 1);
+            indices.push(diagIdx, diagIdx + 1, diagIdx + 2);
+            indices.push(diagIdx, diagIdx + 2, diagIdx + 3);
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create fox-like pointed V-shaped snout
+        // Parameters:
+        // - sharpness: 1.0 = very sharp, 2.0 = moderate, 3.0+ = blunt (default: 1.5)
+        // - tipRadius: 0.0 = needle point, 0.1 = slightly blunt, 0.2+ = very blunt (default: 0.05)
+        function createFoxSnout(sharpness = 1.5, tipRadius = 0.05) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+            const lengthSegments = 15;
+            const radialSegments = 12;
+            const snoutLength = 0.6;
+
+            // Create pointed snout that tapers to a tip
+            for (let i = 0; i <= lengthSegments; i++) {
+                const t = i / lengthSegments;
+                const z = t * snoutLength;
+
+                // Radius decreases towards tip - adjust sharpness with power function
+                // Higher sharpness value = more blunt/gradual taper
+                const radiusFactor = Math.pow(1 - t, sharpness);
+
+                // Add minimum radius at tip for bluntness (instead of sharp point)
+                const radiusX = (0.35 * radiusFactor) + (tipRadius * t); // Width
+                const radiusY = (0.25 * radiusFactor) + (tipRadius * 0.7 * t); // Height (shorter for fox-like)
+
+                // Make top more flat, bottom more pointed (V-shape)
+                for (let j = 0; j <= radialSegments; j++) {
+                    const angle = (j / radialSegments) * Math.PI * 2;
+                    let x = Math.cos(angle) * radiusX;
+                    let y = Math.sin(angle) * radiusY;
+
+                    // Create V-shape by making bottom sharper
+                    if (angle > Math.PI) { // Bottom half
+                        const bottomFactor = Math.abs(angle - Math.PI * 1.5) / (Math.PI * 0.5);
+                        y *= (0.6 + bottomFactor * 0.4); // Sharper bottom
+                    } else { // Top half
+                        y *= 0.9; // Slightly flatter top
+                    }
+
+                    positions.push(x, y, z);
+
+                    // Calculate normal for lighting
+                    const nx = x / (radiusX + 0.01);
+                    const ny = y / (radiusY + 0.01);
+                    const nz = t * 0.3; // Slight forward component
+                    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    normals.push(nx / len, ny / len, nz / len);
+
+                    texCoords.push(j / radialSegments, t);
+                }
+            }
+
+            // Generate indices
+            for (let i = 0; i < lengthSegments; i++) {
+                for (let j = 0; j < radialSegments; j++) {
+                    const a = i * (radialSegments + 1) + j;
+                    const b = a + radialSegments + 1;
+                    const c = a + 1;
+                    const d = b + 1;
+
+                    indices.push(a, b, c);
+                    indices.push(b, d, c);
+                }
+            }
+
+            // Add sharp tip cap at the end
+            const tipCenter = positions.length / 3;
+            positions.push(0, 0, snoutLength);
+            normals.push(0, 0, 1);
+            texCoords.push(0.5, 1);
+
+            const lastRingStart = lengthSegments * (radialSegments + 1);
+            for (let j = 0; j < radialSegments; j++) {
+                const a = lastRingStart + j;
+                const b = lastRingStart + j + 1;
+                indices.push(a, tipCenter, b);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create wavy mustache with 3 curves using sine wave modulation
+        function createCurvedMustache(direction = 1) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+            const segments = 30; // More segments for smooth wavy curve
+            const radialSegments = 8;
+            const thickness = 0.06;
+
+            // Main path with 3 waves
+            function getPathPoint(t) {
+                // === MUSTACHE LENGTH CONTROL ===
+                const mustacheLength = 2; // Change this to make mustache longer/shorter horizontally
+
+                // Base horizontal curve - extends in X direction
+                const x = direction * t * mustacheLength;
+
+                // Add 3 waves using sine
+                const waveFrequency = 3; // 3 complete waves
+                const waveAmplitude = 0.12; // Wave height
+                const y = Math.sin(t * Math.PI * waveFrequency) * waveAmplitude;
+
+                // Slight forward curve
+                const z = t * 0.15 + Math.cos(t * Math.PI * waveFrequency) * 0.05;
+
+                // Curve upward at the end
+                const upwardCurve = t * t * 0.15;
+
+                return [x, y + upwardCurve, z];
+            }
+
+            // Get tangent by numerical differentiation
+            function getPathTangent(t) {
+                const dt = 0.01;
+                const p1 = getPathPoint(Math.max(0, t - dt));
+                const p2 = getPathPoint(Math.min(1, t + dt));
+                return [
+                    p2[0] - p1[0],
+                    p2[1] - p1[1],
+                    p2[2] - p1[2]
+                ];
+            }
+
+            function normalize(v) {
+                const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0];
+            }
+
+            function cross(a, b) {
+                return [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0]
+                ];
+            }
+
+            // Generate flattened ribbon along wavy path
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const point = getPathPoint(t);
+                const tangent = normalize(getPathTangent(t));
+
+                // Create perpendicular vectors for tube cross-section
+                const up = [0, 1, 0];
+                const right = normalize(cross(tangent, up));
+                const actualUp = normalize(cross(right, tangent));
+
+                // Vary thickness along curve (thicker at start, thinner at tip)
+                const radiusScale = 1.0 - t * 0.3;
+                const currentThickness = thickness * radiusScale;
+
+                // Create flattened elliptical cross-section (wider towards -Z, thinner in Y)
+                for (let j = 0; j <= radialSegments; j++) {
+                    const angle = (j / radialSegments) * Math.PI * 2;
+                    const cos = Math.cos(angle);
+                    const sin = Math.sin(angle);
+
+                    // Scale factors: make it flat like a ribbon
+                    const scaleX = 5.0;  // Width in X direction (left-right/horizontal)
+                    const scaleY = 0.35; // Height in Y direction (top-bottom/vertical) - thin
+                    const scaleZ = 5.5;  // Depth in Z direction (front-back) - wider
+
+                    // Normal calculation with scaling
+                    const nx = right[0] * cos * scaleX + actualUp[0] * sin * scaleY;
+                    const ny = right[1] * cos * scaleX + actualUp[1] * sin * scaleY;
+                    const nz = right[2] * cos * scaleX + actualUp[2] * sin * scaleY;
+
+                    const normalLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    const normNx = normalLen > 0 ? nx / normalLen : 0;
+                    const normNy = normalLen > 0 ? ny / normalLen : 1;
+                    const normNz = normalLen > 0 ? nz / normalLen : 0;
+
+                    // Position calculation with separate X, Y, Z components
+                    const offsetX = right[0] * cos * currentThickness * scaleX + actualUp[0] * sin * currentThickness * scaleY;
+                    const offsetY = right[1] * cos * currentThickness * scaleX + actualUp[1] * sin * currentThickness * scaleY;
+                    const offsetZ = right[2] * cos * currentThickness * scaleX + actualUp[2] * sin * currentThickness * scaleZ;
+
+                    positions.push(
+                        point[0] + offsetX,
+                        point[1] + offsetY,
+                        point[2] + offsetZ
+                    );
+
+                    normals.push(normNx, normNy, normNz);
+                    texCoords.push(j / radialSegments, t);
+                }
+            }
+
+            // Generate indices for tube
+            for (let i = 0; i < segments; i++) {
+                for (let j = 0; j < radialSegments; j++) {
+                    const a = i * (radialSegments + 1) + j;
+                    const b = a + radialSegments + 1;
+                    const c = a + 1;
+                    const d = b + 1;
+
+                    indices.push(a, b, c);
+                    indices.push(b, d, c);
+                }
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create flame-shaped center mustache pointing downward
+        function createFlameMustache() {
+            const positions = [], normals = [], texCoords = [], indices = [];
+            const segments = 40; // Smooth flame shape
+            const radialSegments = 12;
+            const flameLength = 0.8; // Length pointing downward
+
+            // Flame path - starts wide at top, narrows and wiggles downward
+            function getFlamePoint(t) {
+                // t goes from 0 (top/wide) to 1 (bottom/tip)
+
+                // Width profile - wide at top, narrow at bottom (flame shape)
+                const widthProfile = Math.pow(1 - t, 1.5) * 0.3 + 0.02; // Starts at 0.3, ends at 0.02
+
+                // Add wavy flame flicker (asymmetric waves)
+                const flicker1 = Math.sin(t * Math.PI * 4) * widthProfile * 0.3;
+                const flicker2 = Math.sin(t * Math.PI * 7 + 1) * widthProfile * 0.2;
+
+                return {
+                    x: flicker1 + flicker2, // Wavy X movement
+                    y: -t * flameLength,    // Downward direction (negative Y)
+                    z: Math.abs(Math.sin(t * Math.PI * 3)) * 0.08, // Slight forward curve
+                    width: widthProfile
+                };
+            }
+
+            // Generate flame geometry
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const flame = getFlamePoint(t);
+
+                // Tangent for proper orientation
+                const nextT = Math.min(t + 0.01, 1);
+                const nextFlame = getFlamePoint(nextT);
+                const tangent = [
+                    nextFlame.x - flame.x,
+                    nextFlame.y - flame.y,
+                    nextFlame.z - flame.z
+                ];
+                const tLen = Math.sqrt(tangent[0]**2 + tangent[1]**2 + tangent[2]**2);
+                tangent[0] /= tLen; tangent[1] /= tLen; tangent[2] /= tLen;
+
+                // Create circular cross-section
+                for (let j = 0; j <= radialSegments; j++) {
+                    const angle = (j / radialSegments) * Math.PI * 2;
+                    const cos = Math.cos(angle);
+                    const sin = Math.sin(angle);
+
+                    // Position with elliptical cross-section (flattened)
+                    const scaleX = 2.0; // Wider horizontally
+                    const scaleZ = 1.0; // Thinner in depth
+
+                    const x = flame.x + cos * flame.width * scaleX;
+                    const y = flame.y;
+                    const z = flame.z + sin * flame.width * scaleZ;
+
+                    positions.push(x, y, z);
+
+                    // Normal calculation
+                    const nx = cos * scaleX;
+                    const nz = sin * scaleZ;
+                    const nLen = Math.sqrt(nx * nx + 0.1 * 0.1 + nz * nz);
+                    normals.push(nx / nLen, 0.1 / nLen, nz / nLen);
+
+                    texCoords.push(j / radialSegments, t);
+                }
+            }
+
+            // Generate indices
+            for (let i = 0; i < segments; i++) {
+                for (let j = 0; j < radialSegments; j++) {
+                    const i0 = i * (radialSegments + 1) + j;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + radialSegments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            // Top cap (wide base)
+            const topCenter = positions.length / 3;
+            positions.push(0, 0, 0);
+            normals.push(0, 1, 0);
+            texCoords.push(0.5, 0.5);
+
+            for (let j = 0; j < radialSegments; j++) {
+                indices.push(topCenter, j + 1, j);
+            }
+
+            // Bottom cap (pointed tip)
+            const bottomCenter = positions.length / 3;
+            const flame = getFlamePoint(1);
+            positions.push(flame.x, flame.y, flame.z);
+            normals.push(0, -1, 0);
+            texCoords.push(0.5, 0.5);
+
+            const lastRingStart = segments * (radialSegments + 1);
+            for (let j = 0; j < radialSegments; j++) {
+                indices.push(bottomCenter, lastRingStart + j, lastRingStart + j + 1);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Create SPOON - Complete spoon with handle and bowl head
+        // Rombak total dari awal dengan approach baru
+        // PARAMETERS untuk customize ukuran spoon
+        function createSpoon(
+            // HANDLE parameters (Gagang)
+            handleRadiusX = 0.05,     // Lebar gagang X (horizontal width)
+            handleRadiusZ = 0.01,     // Lebar gagang Z (depth)
+            handleLength = 0.8,        // Panjang gagang Y (length)
+            // BOWL parameters (Kepala Sendok)
+            bowlWidth = 0.5,           // Lebar bowl X (horizontal width)
+            bowlLength = 0.7,          // Panjang bowl Z (length from handle)
+            bowlThickness = 0.05       // Ketebalan bowl Y (thickness)
+        ) {
+            const positions = [], normals = [], texCoords = [], indices = [];
+
+            // ===== PART 1: HANDLE (Gagang) - Long thin cylinder =====
+            const handleSegments = 11;
+            const handleRings = 1;
+
+            let vertexOffset = 0;
+
+            // Generate handle vertices (elliptical cross-section untuk X dan Z berbeda)
+            for (let i = 0; i <= handleRings; i++) {
+                const y = (i / handleRings) * handleLength;
+
+                for (let j = 0; j <= handleSegments; j++) {
+                    const angle = (j / handleSegments) * Math.PI * 2;
+                    const x = Math.cos(angle) * handleRadiusX; // Width X
+                    const z = Math.sin(angle) * handleRadiusZ; // Depth Z
+
+                    positions.push(x, y, z);
+                    normals.push(Math.cos(angle), 0, Math.sin(angle));
+                    texCoords.push(j / handleSegments, i / handleRings);
+                }
+            }
+
+            // Generate handle indices
+            for (let i = 0; i < handleRings; i++) {
+                for (let j = 0; j < handleSegments; j++) {
+                    const i0 = i * (handleSegments + 1) + j;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + handleSegments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            vertexOffset = positions.length / 3;
+
+            // ===== PART 2: BOWL HEAD (Kepala Sendok) - Flat oval shape =====
+            // Menggunakan parameter dari function arguments
+            const bowlSegments = 16;
+            const bowlRings = 12;
+
+            // Bowl dimulai dari ujung handle
+            const bowlStartY = handleLength;
+
+            // Generate TOP surface bowl vertices - berbentuk oval pipih
+            for (let i = 0; i <= bowlRings; i++) {
+                const v = i / bowlRings; // 0 to 1 from near handle to far tip
+
+                // Z position - memanjang dari handle
+                const z = v * bowlLength;
+
+                // Width taper - lebar di tengah, mengecil ke ujung elips
+                let widthScale;
+                if (v < 0.2) {
+                    // Narrow connection to handle
+                    widthScale = 0.3 + v * 2; // 0.3 to 0.7
+                } else if (v < 0.7) {
+                    // Wide middle part
+                    widthScale = 0.7 + (v - 0.2) * 0.6; // 0.7 to 1.0
+                } else {
+                    // Taper to elliptical tip (smooth curve, not sharp)
+                    const t = (v - 0.7) / 0.3; // 0 to 1
+                    widthScale = 1.0 - t * t * 0.55; // Quadratic taper: 1.0 to 0.45 (smooth oval end)
+                }
+
+                const currentWidth = bowlWidth * Math.max(0.3, widthScale);
+
+                // Create elliptical cross-section
+                for (let j = 0; j <= bowlSegments; j++) {
+                    const u = j / bowlSegments;
+                    const angle = u * Math.PI * 2;
+
+                    // X: horizontal width (ellipse major axis)
+                    const x = Math.cos(angle) * currentWidth;
+
+                    // Y: vertical position - FLAT (tidak melengkung)
+                    // Sendok itu PIPIH, bukan bulat seperti ellipsoid
+                    const y = bowlStartY; // Semua vertex di Y yang sama = FLAT
+
+                    positions.push(x, y, z);
+
+                    // Normal untuk permukaan FLAT - pointing UP (Y+)
+                    // Karena sendok pipih, normal mengarah ke atas
+                    normals.push(0, 1, 0); // Flat surface normal
+
+                    texCoords.push(u, v);
+                }
+            }
+
+            // Generate bowl indices
+            for (let i = 0; i < bowlRings; i++) {
+                for (let j = 0; j < bowlSegments; j++) {
+                    const i0 = vertexOffset + i * (bowlSegments + 1) + j;
+                    const i1 = i0 + 1;
+                    const i2 = i0 + bowlSegments + 1;
+                    const i3 = i2 + 1;
+
+                    indices.push(i0, i2, i1);
+                    indices.push(i1, i2, i3);
+                }
+            }
+
+            // ===== PART 3: CAPS (Tutup ujung-ujung) =====
+
+            // Handle bottom cap
+            const handleBottomCenter = positions.length / 3;
+            positions.push(0, 0, 0);
+            normals.push(0, -1, 0);
+            texCoords.push(0.5, 0.5);
+
+            for (let j = 0; j < handleSegments; j++) {
+                indices.push(handleBottomCenter, j, j + 1);
+            }
+
+            // Bowl tip cap - elliptical end (NO sharp point, make it round ellipse)
+            // Create a rounded elliptical cap by adding extra ring at the very end
+            const tipV = 1.0;
+            const tipZ = bowlLength + 0.05; // Extend slightly for rounded cap
+            const tipWidthScale = 0.2; // Very small at the tip for rounded ellipse
+            const tipWidth = bowlWidth * tipWidthScale;
+
+            // Add final elliptical ring for rounded tip - FLAT tidak melengkung
+            for (let j = 0; j <= bowlSegments; j++) {
+                const u = j / bowlSegments;
+                const angle = u * Math.PI * 2;
+
+                const x = Math.cos(angle) * tipWidth;
+                const y = bowlStartY; // FLAT - semua di Y yang sama
+
+                positions.push(x, y, tipZ);
+
+                const nx = Math.cos(angle);
+                const ny = Math.sin(angle) * 0.1;
+                const nz = 0.8;
+                const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                normals.push(nx / len, ny / len, nz / len);
+
+                texCoords.push(u, 1.0);
+            }
+
+            // Connect last bowl ring to tip ring
+            const lastBowlRing = vertexOffset + bowlRings * (bowlSegments + 1);
+            const tipRing = positions.length / 3 - (bowlSegments + 1);
+            for (let j = 0; j < bowlSegments; j++) {
+                const i0 = lastBowlRing + j;
+                const i1 = i0 + 1;
+                const i2 = tipRing + j;
+                const i3 = i2 + 1;
+
+                indices.push(i0, i2, i1);
+                indices.push(i1, i2, i3);
+            }
+
+            // Close the very tip with small elliptical cap
+            const tipCenter = positions.length / 3;
+            positions.push(0, bowlStartY, tipZ + 0.02);
+            normals.push(0, 0, 1);
+            texCoords.push(0.5, 1.0);
+
+            for (let j = 0; j < bowlSegments; j++) {
+                indices.push(tipCenter, tipRing + j, tipRing + j + 1);
+            }
+
+            return { positions, normals, texCoords, indices };
+        }
+
+        // Initialize WebGL
+        function initWebGL() {
+            const canvas = document.getElementById('glCanvas');
+            const gl = canvas.getContext('webgl', {
+                antialias: true,
+                alpha: false
+            });
+
+            if (!gl) {
+                alert('WebGL not supported');
+                return null;
+            }
+
+            // Set canvas to full window size
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            // Set WebGL viewport to match canvas size
+            gl.viewport(0, 0, canvas.width, canvas.height);
+
+            return gl;
+        }
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+
+            return shader;
+        }
+
+        function createProgram(gl, vsSource, fsSource) {
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(program));
+                return null;
+            }
+
+            return program;
+        }
+
+        function createBuffer(gl, data, type = gl.ARRAY_BUFFER) {
+            const buffer = gl.createBuffer();
+            gl.bindBuffer(type, buffer);
+            gl.bufferData(type, data, gl.STATIC_DRAW);
+            return buffer;
+        }
+
+        // Enhanced BodyPart class
+        class BodyPart {
+            constructor(geometry, color, secondaryColor = null, parent = null, materialType = 0) {
+                this.geometry = geometry;
+                this.color = color;
+                this.secondaryColor = secondaryColor || color;
+                this.parent = parent;
+                this.children = [];
+                this.localMatrix = mat4.create();
+                this.worldMatrix = mat4.create();
+                this.translation = [0, 0, 0];
+                this.rotation = [0, 0, 0];
+                this.scale = [1, 1, 1];
+                this.shininess = 32.0;
+                this.metallic = 0.5;
+                this.materialType = materialType; // 0: normal, 1: metallic, 2: striped, 3: glowing
+
+                if (parent) {
+                    parent.children.push(this);
+                }
+            }
+
+            updateLocalMatrix() {
+                const m = mat4.create();
+                mat4.translate(m, m, this.translation);
+                mat4.rotate(m, m, this.rotation[0], [1, 0, 0]);
+                mat4.rotate(m, m, this.rotation[1], [0, 1, 0]);
+                mat4.rotate(m, m, this.rotation[2], [0, 0, 1]);
+                mat4.scale(m, m, this.scale);
+                this.localMatrix = m;
+            }
+
+            updateWorldMatrix(parentWorldMatrix = null) {
+                if (parentWorldMatrix) {
+                    mat4.multiply(this.worldMatrix, parentWorldMatrix, this.localMatrix);
+                } else {
+                    mat4.copy(this.worldMatrix, this.localMatrix);
+                }
+
+                for (const child of this.children) {
+                    child.updateWorldMatrix(this.worldMatrix);
+                }
+            }
+        }
+
+        // Main Application
+        class AlakazamApp {
+            constructor() {
+                this.gl = initWebGL();
+                if (!this.gl) return;
+
+                this.program = createProgram(this.gl, vsSource, fsSource);
+                this.setupAttributes();
+                this.createGeometries();
+                this.createEnhancedAlakazam();
+                this.setupCamera();
+                this.setupControls();
+                this.time = 0;
+                this.animationMode = 0; // 0: idle, 1: psychic pose, 2: meditation
+
+                this.render();
+            }
+
+            setupAttributes() {
+                const gl = this.gl;
+                this.programInfo = {
+                    attribLocations: {
+                        vertexPosition: gl.getAttribLocation(this.program, 'aVertexPosition'),
+                        vertexNormal: gl.getAttribLocation(this.program, 'aVertexNormal'),
+                        texCoord: gl.getAttribLocation(this.program, 'aTexCoord'),
+                    },
+                    uniformLocations: {
+                        projectionMatrix: gl.getUniformLocation(this.program, 'uProjectionMatrix'),
+                        modelViewMatrix: gl.getUniformLocation(this.program, 'uModelViewMatrix'),
+                        normalMatrix: gl.getUniformLocation(this.program, 'uNormalMatrix'),
+                        color: gl.getUniformLocation(this.program, 'uColor'),
+                        secondaryColor: gl.getUniformLocation(this.program, 'uSecondaryColor'),
+                        lightPosition: gl.getUniformLocation(this.program, 'uLightPosition'),
+                        ambientLight: gl.getUniformLocation(this.program, 'uAmbientLight'),
+                        shininess: gl.getUniformLocation(this.program, 'uShininess'),
+                        metallic: gl.getUniformLocation(this.program, 'uMetallic'),
+                        time: gl.getUniformLocation(this.program, 'uTime'),
+                        materialType: gl.getUniformLocation(this.program, 'uMaterialType'),
+                    },
+                };
+            }
+
+            createGeometryBuffers(geometry) {
+                const gl = this.gl;
+                const buffers = {
+                    position: createBuffer(gl, new Float32Array(geometry.positions)),
+                    normal: createBuffer(gl, new Float32Array(geometry.normals)),
+                    indices: createBuffer(gl, new Uint16Array(geometry.indices), gl.ELEMENT_ARRAY_BUFFER),
+                    indexCount: geometry.indices.length
+                };
+
+                if (geometry.texCoords) {
+                    buffers.texCoord = createBuffer(gl, new Float32Array(geometry.texCoords));
+                }
+
+                return buffers;
+            }
+
+            createGeometries() {
+                this.sphereBuffers = this.createGeometryBuffers(createSphere(1, 20, 20));
+                this.cylinderBuffers = this.createGeometryBuffers(createCylinder(1, 1, 2, 20, 3));
+                this.coneBuffers = this.createGeometryBuffers(createCone(1, 2, 20));
+                this.roundedConeBuffers = this.createGeometryBuffers(createRoundedCone(1, 2, 20, 0.15)); // Rounded tip cone
+                this.torusBuffers = this.createGeometryBuffers(createTorus(0.5, 0.2, 16, 12));
+
+                // Trapezoid torso - angular body shape (wide shoulders, narrow waist)
+                // Parameters: topWidth, topDepth, bottomWidth, bottomDepth, height, segments
+                this.trapezoidTorsoBuffers = this.createGeometryBuffers(
+                    createTrapezoidTorso(1.8, 0.8, 0.9, 0.5, 2.0, 20)
+                );
+
+                // Inverted trapezoid for lower body/pants (narrow waist, wide thighs)
+                // Flip the parameters: small at top, large at bottom
+                this.invertedTrapezoidBuffers = this.createGeometryBuffers(
+                    createTrapezoidTorso(0.5, 0.3, 1.0, 0.6, 1.0, 20)
+                    // topWidth=0.5 (narrow waist), bottomWidth=1.0 (wide thighs)
+                );
+
+                // Various ellipsoids for better anatomy
+                this.headBuffers = this.createGeometryBuffers(createEllipsoid(0.7, 0.8, 0.75, 20, 20));
+                this.bodyBuffers = this.createGeometryBuffers(createEllipsoid(0.8, 1.2, 0.65, 20, 20));
+                this.armBuffers = this.createGeometryBuffers(createCylinder(0.15, 0.12, 1.2, 16, 4));
+                this.legBuffers = this.createGeometryBuffers(createCylinder(0.18, 0.14, 1.4, 16, 4));
+
+                // Fox-like pointed snout
+                // Adjust these values: sharpness (1.0=sharp, 3.0=blunt), tipRadius (0.0=point, 0.2=blunt)
+                const snoutSharpness = 1;  // More blunt taper (was 1.5)
+                const snoutTipRadius = 0.2; // Blunter tip (was 0.05)
+                this.foxSnoutBuffers = this.createGeometryBuffers(createFoxSnout(snoutSharpness, snoutTipRadius));
+
+                // Sharp triangular eyes (right triangle shape)
+                this.triangularEyeBuffers = this.createGeometryBuffers(createTriangularEye());
+
+                // Curved mustache buffers (left curves left, right curves right)
+                this.leftMustacheBuffers = this.createGeometryBuffers(createCurvedMustache(-1));
+                this.rightMustacheBuffers = this.createGeometryBuffers(createCurvedMustache(1));
+
+                // Flame-shaped center mustache (points downward)
+                this.flameMustacheBuffers = this.createGeometryBuffers(createFlameMustache());
+
+                // Complete spoon geometry - handle + bowl in one mesh
+                // PARAMETERS: Adjust these to change spoon size
+                const spoonHandleX = 0.03;       // Gagang lebar X
+                const spoonHandleZ = 0.01;       // Gagang depth Z
+                const spoonHandleLength = 0.5;   // Gagang panjang Y
+                const spoonBowlWidth = 0.2;      // Bowl lebar X
+                const spoonBowlLength = 0.2;     // Bowl panjang Z
+                const spoonBowlThickness = 0.05; // Bowl ketebalan Y
+
+                this.completeSpoonBuffers = this.createGeometryBuffers(
+                    createSpoon(spoonHandleX, spoonHandleZ, spoonHandleLength,
+                               spoonBowlWidth, spoonBowlLength, spoonBowlThickness)
+                );
+            }
+
+            createEnhancedAlakazam() {
+                // Alakazam's accurate color palette
+                const mainYellow = [0.88, 0.75, 0.35];
+                const darkBrown = [0.45, 0.30, 0.15];
+                const mustacheWhite = [0.95, 0.95, 0.98]; // Changed to white
+                const silver = [0.85, 0.88, 0.92];
+                const gold = [0.95, 0.85, 0.40];
+
+                // Root
+                this.root = new BodyPart(null, mainYellow);
+                this.root.translation = [0, 0, 0];
+
+                // BODY - Angular trapezoid torso (wide shoulders, narrow waist)
+                // Changed from round ellipsoid to sharp geometric trapezoid shape
+                this.body = new BodyPart(this.trapezoidTorsoBuffers, mainYellow, darkBrown, this.root, 2);
+                this.body.scale = [1.0, 1.0, 1.0];
+                this.body.translation = [0, 0.5, 0];
+
+                // Chest armor/plate
+                this.chestPlate = new BodyPart(this.sphereBuffers, darkBrown, null, this.body, 0);
+                this.chestPlate.scale = [0.7, 0.4, 0.3];
+                this.chestPlate.translation = [0, 0.5, 0.5];
+
+                 // Chest armor/plate
+                this.chestPlate = new BodyPart(this.sphereBuffers, darkBrown, null, this.body, 0);
+                this.chestPlate.scale = [0.7, 0.1, 0.3];
+                this.chestPlate.translation = [1, 0.5, 0.5];
+                this.chestPlate.rotation[0] = 0;    // X-axis: tilt forward/backward
+                this.chestPlate.rotation[1] = 0;    // Y-axis: rotate left/right
+                this.chestPlate.rotation[2] = 0;    // Z-axis: roll/tilt sideways
+
+                // HEAD - Fox-like with better proportions
+                this.head = new BodyPart(this.headBuffers, mainYellow, null, this.body, 3);
+                this.head.scale = [1.1, 1.1, 1.1];
+                this.head.translation = [0, 1.8, 0];
+
+                // Snout base - rounded sphere (connects to head)
+                this.snoutBase = new BodyPart(this.sphereBuffers, mainYellow, null, this.head, 0);
+                this.snoutBase.scale = [0.3, 0.32, 0.25]; // Sphere at base
+                this.snoutBase.translation = [0, -0.15, 0.6];
+
+                // Sharp V-shaped fox snout tip (extends from sphere front)
+                this.snoutTip = new BodyPart(this.foxSnoutBuffers, mainYellow, null, this.snoutBase, 0);
+                this.snoutTip.scale = [2, 3, 4]; // Tapered V-shape (longer)
+                this.snoutTip.translation = [0, -0.08, 0.5]; // Move further forward to clear sphere
+                this.snoutTip.rotation[0] = 0.08; // Slight downward angle
+
+                // EYES - Sharp triangular/angular (right triangle shape)
+                const eyeWhite = [0.95, 0.95, 0.98];
+                const eyeBlack = [0.1, 0.1, 0.1]; // Black pupil
+
+                // Left eye - sharp right triangle (white fill)
+                this.leftEye = new BodyPart(this.triangularEyeBuffers, eyeWhite, null, this.head, 0);
+                this.leftEye.scale = [0.4, 0.4, 0.4]; // Sharp triangular
+                this.leftEye.translation = [-0.3, 0.3, 0.587]; // Side of head
+                this.leftEye.rotation[1] = -0.3; // Angle outward
+                this.leftEye.rotation[2] = 4.8; // No tilt (keep triangle upright)
+
+                // Left eye outline - black edges
+                this.leftEyeOutline = new BodyPart(this.triangularEyeBuffers, eyeBlack, null, this.leftEye, 0);
+                this.leftEyeOutline.scale = [1.05, 1.05, 0.95]; // Slightly larger for outline effect
+                this.leftEyeOutline.translation = [0, 0, -0.01]; // Behind white triangle
+
+                // Left pupil - small black dot at tip
+                this.leftPupil = new BodyPart(this.sphereBuffers, eyeBlack, null, this.leftEye, 0);
+                this.leftPupil.scale = [0.08, 0.08, 0.2]; // Very small dot
+                this.leftPupil.translation = [0.25, 0.1, 0.1]; // At the sharp tip corner
+
+                // Right eye - sharp right triangle (mirrored, white fill)
+                this.rightEye = new BodyPart(this.triangularEyeBuffers, eyeWhite, null, this.head, 0);
+                this.rightEye.scale = [-0.4, 0.4, 0.4]; // Mirror with negative X scale
+                this.rightEye.translation = [0.3, 0.3, 0.587]; // Side of head
+                this.rightEye.rotation[1] = 0.3; // Angle outward
+                this.rightEye.rotation[2] = -4.8; // No tilt
+
+                // Right eye outline - black edges
+                this.rightEyeOutline = new BodyPart(this.triangularEyeBuffers, eyeBlack, null, this.rightEye, 0);
+                this.rightEyeOutline.scale = [1.05, 1.05, 0.95]; // Slightly larger for outline effect
+                this.rightEyeOutline.translation = [0, 0, -0.01]; // Behind white triangle
+
+                // Right pupil - small black dot at tip
+                this.rightPupil = new BodyPart(this.sphereBuffers, eyeBlack, null, this.rightEye, 0);
+                this.rightPupil.scale = [0.08, 0.08, 0.2]; // Very small dot
+                this.rightPupil.translation = [0.25, 0.1, 0.1]; // At the sharp tip corner (mirrored)
+
+                // EARS - Large pointed fox ears
+                this.leftEar = new BodyPart(this.coneBuffers, mainYellow, null, this.head, 0);
+                this.leftEar.scale = [0.35, 0.8, 0.35];
+                this.leftEar.rotation[0] = 0.2;    // X-axis (tilt back slightly)
+                this.leftEar.rotation[1] = 0.3;    // Y-axis (turn outward)
+                this.leftEar.rotation[2] = -0.5;    // Z-axis (tilt left) - base value
+                this.leftEar.translation = [0.8, 1, 0];
+
+                this.rightEar = new BodyPart(this.coneBuffers, mainYellow, null, this.head, 0);
+                this.rightEar.scale = [0.35, 0.8, 0.35];
+                this.rightEar.rotation[0] = -0.2;   // X-axis (tilt back slightly)
+                this.rightEar.rotation[1] = 0.3;    // Y-axis (turn outward)
+                this.rightEar.rotation[2] = 0.5;    // Z-axis (tilt right) - base value
+                this.rightEar.translation = [-0.8, 1, 0];
+
+                // Inner ears
+                this.leftInnerEar = new BodyPart(this.coneBuffers, darkBrown, null, this.leftEar, 0);
+                this.leftInnerEar.scale = [0.5, 0.7, 0.5];
+                this.leftInnerEar.translation = [0, 0, 0];
+
+                this.rightInnerEar = new BodyPart(this.coneBuffers, darkBrown, null, this.rightEar, 0);
+                this.rightInnerEar.scale = [0.5, 0.7, 0.5];
+                this.rightInnerEar.translation = [0, 0, 0];
+
+                // CHEEK SPIKES - Ear-like protrusions on cheeks (Alakazam's signature feature)
+                // Using rounded cone for blunt tip (not sharp like needle, but still pointed)
+                this.leftCheekSpike = new BodyPart(this.roundedConeBuffers, mainYellow, null, this.head, 0);
+                this.leftCheekSpike.scale = [0.25, 0.3, 0.25];
+                this.leftCheekSpike.rotation[0] = 3;    // Tilt slightly forward
+                this.leftCheekSpike.rotation[1] = -0.2;   // Point outward to the left
+                this.leftCheekSpike.rotation[2] = 1.5;   // Angle downward-outward
+                this.leftCheekSpike.translation = [-0.9, -0.2, 0.2];
+
+                this.rightCheekSpike = new BodyPart(this.roundedConeBuffers, mainYellow, null, this.head, 0);
+                this.rightCheekSpike.scale = [0.25, 0.3, 0.25];
+                this.rightCheekSpike.rotation[0] = 3;   // Tilt slightly forward
+                this.rightCheekSpike.rotation[1] = 0.2;   // Point outward to the right
+                this.rightCheekSpike.rotation[2] = -1.5;   // Angle downward-outward
+                this.rightCheekSpike.translation = [0.9, -0.2, 0.2];
+
+                // Inner cheek spikes (darker brown) - also rounded
+                this.leftCheekSpikeInner = new BodyPart(this.roundedConeBuffers, darkBrown, null, this.leftCheekSpike, 0);
+                this.leftCheekSpikeInner.scale = [0.5, 0.7, 0.5];
+                this.leftCheekSpikeInner.translation = [0, 0, 0];
+
+                this.rightCheekSpikeInner = new BodyPart(this.roundedConeBuffers, darkBrown, null, this.rightCheekSpike, 0);
+                this.rightCheekSpikeInner.scale = [0.5, 0.7, 0.5];
+                this.rightCheekSpikeInner.translation = [0, 0, 0];
+
+                // MUSTACHE - Iconic wavy white mustache with 3 curves
+                this.leftMustache = new BodyPart(this.leftMustacheBuffers, mustacheWhite, null, this.head, 0);
+                this.leftMustache.scale = [1.0, 1.0, 1.0]; // Natural scale for wavy curves
+                this.leftMustache.translation = [-0.1, -0.05, 1]; // Position on face
+                this.leftMustache.rotation[0] = 0.4; // Tilt downward (X-axis rotation)
+                this.leftMustache.rotation[1] = 0.2; // Angle outward
+                this.leftMustache.rotation[2] = 0.3; // More droop (increased from 0.1)
+                this.leftMustache.shininess = 48.0; // Slight shine for white hair
+                this.leftMustache.metallic = 0.2;
+
+                this.rightMustache = new BodyPart(this.rightMustacheBuffers, mustacheWhite, null, this.head, 0);
+                this.rightMustache.scale = [1.0, 1.0, 1.0];
+                this.rightMustache.translation = [0.1, -0.05, 1];
+                this.rightMustache.rotation[0] = 0.4; // Tilt downward (X-axis rotation)
+                this.rightMustache.rotation[1] = -0.2; // Angle outward
+                this.rightMustache.rotation[2] = -0.3; // More droop (radians, not degrees!)
+                this.rightMustache.shininess = 48.0;
+                this.rightMustache.metallic = 0.2;
+
+                // CENTER MUSTACHE - Flame-shaped, pointing downward between left and right mustaches
+                // PARAMETERS: Adjust these to change size and position
+                const centerMustacheWidth = 1;   // X-axis: Width (larger = wider, try 2.0-4.0)
+                const centerMustacheLength = 2;  // Y-axis: Length downward (larger = longer, try 2.0-4.0)
+                const centerMustacheDepth = 1.5;   // Z-axis: Thickness (larger = thicker, try 1.0-2.0)
+                const centerMustacheY = -0.1;      // Vertical position (lower = more negative)
+                const centerMustacheZ = 0.95;      // Forward position (forward = larger value)
+
+                this.centerMustache = new BodyPart(this.flameMustacheBuffers, mustacheWhite, null, this.head, 0);
+                this.centerMustache.scale = [centerMustacheWidth, centerMustacheLength, centerMustacheDepth];
+                this.centerMustache.translation = [0, centerMustacheY, centerMustacheZ];
+                this.centerMustache.rotation[0] = 0; // X-axis tilt (positive = tilt forward)
+                this.centerMustache.rotation[1] = 0; // Y-axis rotation (side rotation)
+                this.centerMustache.rotation[2] = 0; // Z-axis roll (tilt sideways)
+                this.centerMustache.shininess = 48.0;
+                this.centerMustache.metallic = 0.2;
+
+                // Star on forehead
+                this.foreheadStar = new BodyPart(this.sphereBuffers, [0.9, 0.2, 0.2], null, this.head, 0);
+                this.foreheadStar.scale = [0.15, 0.15, 0.05];
+                this.foreheadStar.translation = [0, 0.35, 0.65];
+
+                // NOSE BRIDGE - Cylindrical bone structure from forehead star to snout
+                // Parameters: scale[0]=width, scale[1]=length, scale[2]=depth
+                // Adjust these values to make it slimmer or longer
+                const noseBridgeWidth = 0.07;   // X-axis thickness (slimmer = smaller value)
+                const noseBridgeLength = 0.51;   // Y-axis length (longer = larger value)
+                const noseBridgeDepth = 0.11;   // Z-axis thickness (slimmer = smaller value)
+
+                this.noseBridge = new BodyPart(this.cylinderBuffers, mainYellow, null, this.head, 0);
+                this.noseBridge.scale = [noseBridgeWidth, noseBridgeLength, noseBridgeDepth];
+                this.noseBridge.translation = [0, 0.15, 0.62]; // Position between forehead and snout
+                this.noseBridge.rotation[0] = 2; // Tilt downward toward snout (increase for steeper angle)
+
+                // Nose bridge cap TOP - sphere to close the top end of the cylinder
+                this.noseBridgeCapTop = new BodyPart(this.sphereBuffers, mainYellow, null, this.noseBridge, 0);
+                this.noseBridgeCapTop.scale = [1.2, 1.0, 1.2]; // Slightly larger than cylinder to ensure coverage
+                this.noseBridgeCapTop.translation = [0, noseBridgeLength, 0]; // At the top end of cylinder
+
+                // Nose bridge cap BOTTOM - sphere to close the bottom end of the cylinder
+                this.noseBridgeCapBottom = new BodyPart(this.sphereBuffers, mainYellow, null, this.noseBridge, 0);
+                this.noseBridgeCapBottom.scale = [1.2, 1.0, 1.2]; // Slightly larger than cylinder to ensure coverage
+                this.noseBridgeCapBottom.translation = [0, -noseBridgeLength, 0]; // At the bottom end of cylinder
+
+                // MEGA ALAKAZAM - FLOATING SPOONS ABOVE HEAD (5 spoons in circular formation)
+                const floatingSpoonGray = [0.7, 0.7, 0.75]; // Silver-gray color
+                const spoonDistance = 1.2; // Distance from head center
+                const spoonHeight = 1.5;   // Height above head
+
+                // Center top spoon (back) - Complete spoon (handle + bowl)
+                this.floatingSpoon1 = new BodyPart(this.completeSpoonBuffers, floatingSpoonGray, null, this.head, 1);
+                this.floatingSpoon1.scale = [1.0, 1.0, 1.0];
+                this.floatingSpoon1.translation = [0, spoonHeight, -spoonDistance * 0.8];
+                this.floatingSpoon1.rotation[0] = -0.3; // Tilt down
+                this.floatingSpoon1.rotation[2] = 0; // Upright
+                this.floatingSpoon1.shininess = 64.0;
+                this.floatingSpoon1.metallic = 0.9;
+
+                // Left-back spoon
+                this.floatingSpoon2 = new BodyPart(this.completeSpoonBuffers, floatingSpoonGray, null, this.head, 1);
+                this.floatingSpoon2.scale = [1.0, 1.0, 1.0];
+                this.floatingSpoon2.translation = [-spoonDistance * 0.7, spoonHeight, -spoonDistance * 0.5];
+                this.floatingSpoon2.rotation[0] = -0.3;
+                this.floatingSpoon2.rotation[1] = 0.5;
+                this.floatingSpoon2.shininess = 64.0;
+                this.floatingSpoon2.metallic = 0.9;
+
+                // Right-back spoon
+                this.floatingSpoon3 = new BodyPart(this.completeSpoonBuffers, floatingSpoonGray, null, this.head, 1);
+                this.floatingSpoon3.scale = [1.0, 1.0, 1.0];
+                this.floatingSpoon3.translation = [spoonDistance * 0.7, spoonHeight, -spoonDistance * 0.5];
+                this.floatingSpoon3.rotation[0] = -0.3;
+                this.floatingSpoon3.rotation[1] = -0.5;
+                this.floatingSpoon3.shininess = 64.0;
+                this.floatingSpoon3.metallic = 0.9;
+
+                // Left-front spoon
+                this.floatingSpoon4 = new BodyPart(this.completeSpoonBuffers, floatingSpoonGray, null, this.head, 1);
+                this.floatingSpoon4.scale = [1.0, 1.0, 1.0];
+                this.floatingSpoon4.translation = [-spoonDistance, spoonHeight, spoonDistance * 0.3];
+                this.floatingSpoon4.rotation[0] = 0.2;
+                this.floatingSpoon4.rotation[1] = 0.8;
+                this.floatingSpoon4.shininess = 64.0;
+                this.floatingSpoon4.metallic = 0.9;
+
+                // Right-front spoon
+                this.floatingSpoon5 = new BodyPart(this.completeSpoonBuffers, floatingSpoonGray, null, this.head, 1);
+                this.floatingSpoon5.scale = [1.0, 1.0, 1.0];
+                this.floatingSpoon5.translation = [spoonDistance, spoonHeight, spoonDistance * 0.3];
+                this.floatingSpoon5.rotation[0] = 0.2;
+                this.floatingSpoon5.rotation[1] = -0.8;
+                this.floatingSpoon5.shininess = 64.0;
+                this.floatingSpoon5.metallic = 0.9;
+
+                // SHOULDERS with armor pads
+                this.leftShoulder = new BodyPart(this.sphereBuffers, mainYellow, null, this.body, 0);
+                this.leftShoulder.scale = [0.35, 0.4, 0.35];
+                this.leftShoulder.translation = [-1.0, 0.9, 0];
+
+                this.leftShoulderPad = new BodyPart(this.sphereBuffers, darkBrown, null, this.leftShoulder, 0);
+                this.leftShoulderPad.scale = [1.3, 0.6, 1.2];
+                this.leftShoulderPad.translation = [0, 0.3, 0];
+
+                this.rightShoulder = new BodyPart(this.sphereBuffers, mainYellow, null, this.body, 0);
+                this.rightShoulder.scale = [0.35, 0.4, 0.35];
+                this.rightShoulder.translation = [1.0, 0.9, 0];
+
+                this.rightShoulderPad = new BodyPart(this.sphereBuffers, darkBrown, null, this.rightShoulder, 0);
+                this.rightShoulderPad.scale = [1.3, 0.6, 1.2];
+                this.rightShoulderPad.translation = [0, 0.3, 0];
+
+                // ARMS - Segmented with joints
+                this.leftUpperArm = new BodyPart(this.armBuffers, mainYellow, darkBrown, this.leftShoulder, 2);
+                this.leftUpperArm.scale = [1.0, 0.5, 1.0];
+                this.leftUpperArm.translation = [0, -0.7, 0];
+
+                this.leftElbow = new BodyPart(this.sphereBuffers, darkBrown, null, this.leftUpperArm, 0);
+                this.leftElbow.scale = [0.18, 0.18, 0.18];
+                this.leftElbow.translation = [0, -0.65, 0];
+
+                this.leftLowerArm = new BodyPart(this.armBuffers, mainYellow, darkBrown, this.leftElbow, 2);
+                this.leftLowerArm.scale = [0.95, 0.45, 0.95];
+                this.leftLowerArm.translation = [0, -0.6, 0];
+
+                this.leftWrist = new BodyPart(this.sphereBuffers, darkBrown, null, this.leftLowerArm, 0);
+                this.leftWrist.scale = [0.16, 0.16, 0.16];
+                this.leftWrist.translation = [0, -0.6, 0];
+
+                this.leftHand = new BodyPart(this.sphereBuffers, mainYellow, null, this.leftWrist, 0);
+                this.leftHand.scale = [0.25, 0.3, 0.22];
+                this.leftHand.translation = [0, -0.25, 0];
+
+                // Fingers (three digits)
+                this.leftFinger1 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.leftHand, 0);
+                this.leftFinger1.scale = [0.08, 0.25, 0.08];
+                this.leftFinger1.translation = [-0.15, -0.3, 0.1];
+                this.leftFinger1.rotation[2] = -0.2;
+
+                this.leftFinger2 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.leftHand, 0);
+                this.leftFinger2.scale = [0.08, 0.25, 0.08];
+                this.leftFinger2.translation = [0, -0.35, 0.1];
+
+                this.leftFinger3 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.leftHand, 0);
+                this.leftFinger3.scale = [0.08, 0.25, 0.08];
+                this.leftFinger3.translation = [0.15, -0.3, 0.1];
+                this.leftFinger3.rotation[2] = 0.2;
+
+                // Right arm (mirror)
+                this.rightUpperArm = new BodyPart(this.armBuffers, mainYellow, darkBrown, this.rightShoulder, 2);
+                this.rightUpperArm.scale = [1.0, 0.5, 1.0];
+                this.rightUpperArm.translation = [0, -0.7, 0];
+
+                this.rightElbow = new BodyPart(this.sphereBuffers, darkBrown, null, this.rightUpperArm, 0);
+                this.rightElbow.scale = [0.18, 0.18, 0.18];
+                this.rightElbow.translation = [0, -0.65, 0];
+
+                this.rightLowerArm = new BodyPart(this.armBuffers, mainYellow, darkBrown, this.rightElbow, 2);
+                this.rightLowerArm.scale = [0.95, 0.45, 0.95];
+                this.rightLowerArm.translation = [0, -0.6, 0];
+
+                this.rightWrist = new BodyPart(this.sphereBuffers, darkBrown, null, this.rightLowerArm, 0);
+                this.rightWrist.scale = [0.16, 0.16, 0.16];
+                this.rightWrist.translation = [0, -0.6, 0];
+
+                this.rightHand = new BodyPart(this.sphereBuffers, mainYellow, null, this.rightWrist, 0);
+                this.rightHand.scale = [0.25, 0.3, 0.22];
+                this.rightHand.translation = [0, -0.25, 0];
+
+                this.rightFinger1 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.rightHand, 0);
+                this.rightFinger1.scale = [0.08, 0.25, 0.08];
+                this.rightFinger1.translation = [-0.15, -0.3, 0.1];
+                this.rightFinger1.rotation[2] = -0.2;
+
+                this.rightFinger2 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.rightHand, 0);
+                this.rightFinger2.scale = [0.08, 0.25, 0.08];
+                this.rightFinger2.translation = [0, -0.35, 0.1];
+
+                this.rightFinger3 = new BodyPart(this.cylinderBuffers, mainYellow, null, this.rightHand, 0);
+                this.rightFinger3.scale = [0.08, 0.25, 0.08];
+                this.rightFinger3.translation = [0.15, -0.3, 0.1];
+                this.rightFinger3.rotation[2] = 0.2;
+
+                // ICONIC SPOONS - More detailed
+                this.leftSpoonHandle = new BodyPart(this.cylinderBuffers, silver, null, this.leftHand, 1);
+                this.leftSpoonHandle.scale = [0.06, 1.0, 0.06];
+                this.leftSpoonHandle.translation = [0, -0.7, 0];
+                this.leftSpoonHandle.shininess = 64.0;
+                this.leftSpoonHandle.metallic = 1.0;
+
+                this.leftSpoonHead = new BodyPart(this.sphereBuffers, silver, null, this.leftSpoonHandle, 1);
+                this.leftSpoonHead.scale = [0.35, 0.18, 0.35];
+                this.leftSpoonHead.translation = [0, -1.1, 0];
+                this.leftSpoonHead.shininess = 64.0;
+                this.leftSpoonHead.metallic = 1.0;
+
+                this.rightSpoonHandle = new BodyPart(this.cylinderBuffers, silver, null, this.rightHand, 1);
+                this.rightSpoonHandle.scale = [0.06, 1.0, 0.06];
+                this.rightSpoonHandle.translation = [0, -0.7, 0];
+                this.rightSpoonHandle.shininess = 64.0;
+                this.rightSpoonHandle.metallic = 1.0;
+
+                this.rightSpoonHead = new BodyPart(this.sphereBuffers, silver, null, this.rightSpoonHandle, 1);
+                this.rightSpoonHead.scale = [0.35, 0.18, 0.35];
+                this.rightSpoonHead.translation = [0, -1.1, 0];
+                this.rightSpoonHead.shininess = 64.0;
+                this.rightSpoonHead.metallic = 1.0;
+
+                // LOWER BODY / PANTS - Inverted trapezoid (narrow waist at top, wider at thighs at bottom)
+                // Using invertedTrapezoidBuffers (already shaped correctly - no rotation needed)
+                this.lowerBody = new BodyPart(this.invertedTrapezoidBuffers, mainYellow, darkBrown, this.body, 2);
+                this.lowerBody.scale = [1.0, 1.0, 1.0]; // Natural scale
+                this.lowerBody.translation = [0, -1.0, 0]; // Below the body/torso
+
+                // LEGS - Now connected to lower body (pants) instead of body
+                this.leftHip = new BodyPart(this.sphereBuffers, mainYellow, null, this.lowerBody, 0);
+                this.leftHip.scale = [0.35, 0.35, 0.35];
+                this.leftHip.translation = [-0.45, -0.5, 0]; // Adjusted position relative to lowerBody
+
+                this.leftThigh = new BodyPart(this.legBuffers, mainYellow, darkBrown, this.leftHip, 2);
+                this.leftThigh.scale = [1.0, 0.45, 1.0];
+                this.leftThigh.translation = [0, -0.8, 0];
+
+                this.leftKnee = new BodyPart(this.sphereBuffers, darkBrown, null, this.leftThigh, 0);
+                this.leftKnee.scale = [0.2, 0.2, 0.2];
+                this.leftKnee.translation = [0, -0.75, 0];
+
+                this.leftCalf = new BodyPart(this.legBuffers, mainYellow, darkBrown, this.leftKnee, 2);
+                this.leftCalf.scale = [0.9, 0.4, 0.9];
+                this.leftCalf.translation = [0, -0.7, 0];
+
+                this.leftAnkle = new BodyPart(this.sphereBuffers, darkBrown, null, this.leftCalf, 0);
+                this.leftAnkle.scale = [0.18, 0.18, 0.18];
+                this.leftAnkle.translation = [0, -0.7, 0];
+
+                // Three-toed foot
+                this.leftFoot = new BodyPart(this.sphereBuffers, mainYellow, null, this.leftAnkle, 0);
+                this.leftFoot.scale = [0.3, 0.18, 0.4];
+                this.leftFoot.translation = [0, -0.2, 0.15];
+
+                this.leftToe1 = new BodyPart(this.sphereBuffers, mainYellow, null, this.leftFoot, 0);
+                this.leftToe1.scale = [0.6, 0.6, 0.9];
+                this.leftToe1.translation = [-0.2, -0.05, 0.45];
+
+                this.leftToe2 = new BodyPart(this.sphereBuffers, mainYellow, null, this.leftFoot, 0);
+                this.leftToe2.scale = [0.6, 0.6, 1.0];
+                this.leftToe2.translation = [0, -0.05, 0.5];
+
+                this.leftToe3 = new BodyPart(this.sphereBuffers, mainYellow, null, this.leftFoot, 0);
+                this.leftToe3.scale = [0.6, 0.6, 0.9];
+                this.leftToe3.translation = [0.2, -0.05, 0.45];
+
+                // Right leg (mirror) - Now connected to lower body (pants)
+                this.rightHip = new BodyPart(this.sphereBuffers, mainYellow, null, this.lowerBody, 0);
+                this.rightHip.scale = [0.35, 0.35, 0.35];
+                this.rightHip.translation = [0.45, -0.5, 0]; // Adjusted position relative to lowerBody
+
+                this.rightThigh = new BodyPart(this.legBuffers, mainYellow, darkBrown, this.rightHip, 2);
+                this.rightThigh.scale = [1.0, 0.45, 1.0];
+                this.rightThigh.translation = [0, -0.8, 0];
+
+                this.rightKnee = new BodyPart(this.sphereBuffers, darkBrown, null, this.rightThigh, 0);
+                this.rightKnee.scale = [0.2, 0.2, 0.2];
+                this.rightKnee.translation = [0, -0.75, 0];
+
+                this.rightCalf = new BodyPart(this.legBuffers, mainYellow, darkBrown, this.rightKnee, 2);
+                this.rightCalf.scale = [0.9, 0.4, 0.9];
+                this.rightCalf.translation = [0, -0.7, 0];
+
+                this.rightAnkle = new BodyPart(this.sphereBuffers, darkBrown, null, this.rightCalf, 0);
+                this.rightAnkle.scale = [0.18, 0.18, 0.18];
+                this.rightAnkle.translation = [0, -0.7, 0];
+
+                this.rightFoot = new BodyPart(this.sphereBuffers, mainYellow, null, this.rightAnkle, 0);
+                this.rightFoot.scale = [0.3, 0.18, 0.4];
+                this.rightFoot.translation = [0, -0.2, 0.15];
+
+                this.rightToe1 = new BodyPart(this.sphereBuffers, mainYellow, null, this.rightFoot, 0);
+                this.rightToe1.scale = [0.6, 0.6, 0.9];
+                this.rightToe1.translation = [-0.2, -0.05, 0.45];
+
+                this.rightToe2 = new BodyPart(this.sphereBuffers, mainYellow, null, this.rightFoot, 0);
+                this.rightToe2.scale = [0.6, 0.6, 1.0];
+                this.rightToe2.translation = [0, -0.05, 0.5];
+
+                this.rightToe3 = new BodyPart(this.sphereBuffers, mainYellow, null, this.rightFoot, 0);
+                this.rightToe3.scale = [0.6, 0.6, 0.9];
+                this.rightToe3.translation = [0.2, -0.05, 0.45];
+
+                // TAIL - Segmented and flexible (made longer with more segments)
+                this.tailBase = new BodyPart(this.cylinderBuffers, mainYellow, darkBrown, this.body, 2);
+                this.tailBase.scale = [0.13, 0.8, 0.13]; // Increased length from 0.6 to 0.8
+                this.tailBase.translation = [0, -0.9, -0.5];
+                this.tailBase.rotation[0] = 0.4;
+
+                this.tailMid1 = new BodyPart(this.cylinderBuffers, mainYellow, darkBrown, this.tailBase, 2);
+                this.tailMid1.scale = [0.9, 0.9, 0.9]; // Increased length from 0.7 to 0.9
+                this.tailMid1.translation = [0, -0.8, -0.05]; // Adjusted position
+
+                this.tailMid2 = new BodyPart(this.cylinderBuffers, mainYellow, darkBrown, this.tailMid1, 2);
+                this.tailMid2.scale = [0.85, 0.85, 0.85]; // Increased length from 0.65 to 0.85
+                this.tailMid2.translation = [0, -0.7, -0.05]; // Adjusted position
+
+                // Additional tail segment for extra length
+                this.tailMid3 = new BodyPart(this.cylinderBuffers, mainYellow, darkBrown, this.tailMid2, 2);
+                this.tailMid3.scale = [0.8, 0.8, 0.8];
+                this.tailMid3.translation = [0, -0.65, -0.05];
+
+                // Tail tip - closed/capped end (sphere to close the cylinder)
+                this.tailTip = new BodyPart(this.sphereBuffers, mainYellow, null, this.tailMid3, 0);
+                this.tailTip.scale = [0.11, 0.11, 0.11]; // Slightly larger to cover cylinder end
+                this.tailTip.translation = [0, -0.65, 0]; // At the end of last segment
+
+                // Decorative end ball (like Alakazam's tail tuft)
+                this.tailEnd = new BodyPart(this.sphereBuffers, darkBrown, null, this.tailTip, 0);
+                this.tailEnd.scale = [1.5, 1.5, 1.5]; // Larger decorative end
+                this.tailEnd.translation = [0, -0.05, 0];
+            }
+
+            setupCamera() {
+                this.camera = {
+                    distance: 6,  // Closer camera for larger model
+                    rotationX: 0.2,
+                    rotationY: 0.3,
+                    targetRotationY: 0.3,
+                    autoRotate: true
+                };
+            }
+
+            setupControls() {
+                const canvas = this.gl.canvas;
+                let isDragging = false;
+                let lastX = 0;
+                let lastY = 0;
+
+                canvas.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    lastX = e.clientX;
+                    lastY = e.clientY;
+                    this.camera.autoRotate = false;
+                });
+
+                canvas.addEventListener('mousemove', (e) => {
+                    if (isDragging) {
+                        const deltaX = e.clientX - lastX;
+                        const deltaY = e.clientY - lastY;
+
+                        this.camera.targetRotationY += deltaX * 0.01;
+                        this.camera.rotationX += deltaY * 0.01;
+                        this.camera.rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.camera.rotationX));
+
+                        lastX = e.clientX;
+                        lastY = e.clientY;
+                    }
+                });
+
+                canvas.addEventListener('mouseup', () => {
+                    isDragging = false;
+                });
+
+                canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    this.camera.distance += e.deltaY * 0.01;
+                    this.camera.distance = Math.max(3, Math.min(15, this.camera.distance));
+                });
+
+                window.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        this.animationMode = (this.animationMode + 1) % 3;
+                        e.preventDefault();
+                    }
+                });
+
+                window.addEventListener('resize', () => {
+                    const canvas = this.gl.canvas;
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    this.gl.viewport(0, 0, canvas.width, canvas.height);
+                });
+            }
+
+            animate() {
+                this.time += 0.016;
+
+                // Auto-rotate camera
+                if (this.camera.autoRotate) {
+                    this.camera.targetRotationY += 0.003;
+                }
+
+                // Smooth camera
+                this.camera.rotationY += (this.camera.targetRotationY - this.camera.rotationY) * 0.1;
+
+                // Animation modes
+                if (this.animationMode === 0) {
+                    // Idle: gentle floating and breathing
+                    this.root.translation[1] = Math.sin(this.time * 1.5) * 0.15;
+
+                    // Breathing
+                    const breathe = Math.sin(this.time * 2) * 0.03 + 1.0;
+                    this.body.scale[0] = breathe;
+                    this.body.scale[2] = breathe;
+
+                    // Gentle head movement
+                    this.head.rotation[1] = Math.sin(this.time * 0.8) * 0.1;
+                    this.head.rotation[0] = Math.sin(this.time * 1.2) * 0.05;
+
+                    // Spoons gentle sway
+                    this.leftSpoonHandle.rotation[2] = Math.sin(this.time * 2) * 0.15;
+                    this.rightSpoonHandle.rotation[2] = Math.sin(this.time * 2 + Math.PI) * 0.15;
+
+                    // Tail sway (with new segment)
+                    this.tailBase.rotation[0] = 0.4 + Math.sin(this.time * 1.5) * 0.2;
+                    this.tailMid1.rotation[0] = Math.sin(this.time * 2) * 0.15;
+                    this.tailMid2.rotation[0] = Math.sin(this.time * 2.5) * 0.12;
+                    this.tailMid3.rotation[0] = Math.sin(this.time * 3) * 0.1;
+
+                    // Ear animation disabled - rotations set in constructor only
+
+                    // Wavy mustache subtle movement (maintain downward tilt)
+                    this.leftMustache.rotation[0] = 0.4 + Math.sin(this.time * 1.5) * 0.02; // Maintain tilt
+                    this.leftMustache.rotation[2] = 0.3 + Math.sin(this.time * 3) * 0.04;
+                    this.leftMustache.rotation[1] = 0.2 + Math.sin(this.time * 2) * 0.03;
+                    this.rightMustache.rotation[0] = 0.4 + Math.sin(this.time * 1.5) * 0.02; // Maintain tilt
+                    this.rightMustache.rotation[2] = -0.3 - Math.sin(this.time * 3) * 0.04;
+
+                    // Center flame mustache - gentle sway like flame flickering
+                    this.centerMustache.rotation[0] = Math.sin(this.time * 2) * 0.05; // Subtle forward/back sway
+                    this.centerMustache.rotation[2] = Math.sin(this.time * 2.5 + 1) * 0.06; // Side-to-side flicker
+                    this.rightMustache.rotation[1] = -0.2 - Math.sin(this.time * 2) * 0.03;
+
+                    // MEGA ALAKAZAM - Floating spoons orbit slowly around head
+                    const orbitSpeed = this.time * 0.5; // Slow orbit
+                    const floatBob = Math.sin(this.time * 2) * 0.1; // Gentle up/down bob
+
+                    // Each spoon rotates slightly and bobs
+                    this.floatingSpoon1.rotation[1] = orbitSpeed;
+                    this.floatingSpoon1.translation[1] = 1.5 + floatBob;
+
+                    this.floatingSpoon2.rotation[1] = orbitSpeed + 0.5;
+                    this.floatingSpoon2.translation[1] = 1.5 + Math.sin(this.time * 2 + 1) * 0.1;
+
+                    this.floatingSpoon3.rotation[1] = orbitSpeed - 0.5;
+                    this.floatingSpoon3.translation[1] = 1.5 + Math.sin(this.time * 2 + 2) * 0.1;
+
+                    this.floatingSpoon4.rotation[1] = orbitSpeed + 0.8;
+                    this.floatingSpoon4.translation[1] = 1.5 + Math.sin(this.time * 2 + 3) * 0.1;
+
+                    this.floatingSpoon5.rotation[1] = orbitSpeed - 0.8;
+                    this.floatingSpoon5.translation[1] = 1.5 + Math.sin(this.time * 2 + 4) * 0.1;
+
+                } else if (this.animationMode === 1) {
+                    // Psychic pose: arms raised, spoons crossed
+                    this.root.translation[1] = Math.sin(this.time * 2) * 0.3 + 0.5;
+
+                    // Arms raised up
+                    this.leftShoulder.rotation[0] = -Math.PI / 3;
+                    this.leftShoulder.rotation[2] = 0.4;
+                    this.rightShoulder.rotation[0] = -Math.PI / 3;
+                    this.rightShoulder.rotation[2] = -0.4;
+
+                    // Elbows bent
+                    this.leftElbow.rotation[0] = -0.6;
+                    this.rightElbow.rotation[0] = -0.6;
+
+                    // Spoons rotate rapidly (psychic power!)
+                    this.leftSpoonHandle.rotation[1] = this.time * 5;
+                    this.rightSpoonHandle.rotation[1] = -this.time * 5;
+
+                    // Head tilted back
+                    this.head.rotation[0] = -0.2 + Math.sin(this.time * 3) * 0.05;
+
+                    // Intense tail movement (with new segment)
+                    this.tailBase.rotation[0] = 0.6 + Math.sin(this.time * 3) * 0.3;
+                    this.tailMid1.rotation[0] = Math.sin(this.time * 3.5) * 0.25;
+                    this.tailMid2.rotation[0] = Math.sin(this.time * 4) * 0.2;
+                    this.tailMid3.rotation[0] = Math.sin(this.time * 4.5) * 0.15;
+
+                } else if (this.animationMode === 2) {
+                    // Meditation: cross-legged, spoons in front
+                    this.root.translation[1] = -1.5 + Math.sin(this.time * 1) * 0.08;
+
+                    // Legs folded
+                    this.leftHip.rotation[0] = Math.PI / 2;
+                    this.leftHip.rotation[2] = -0.5;
+                    this.rightHip.rotation[0] = Math.PI / 2;
+                    this.rightHip.rotation[2] = 0.5;
+
+                    this.leftKnee.rotation[0] = -Math.PI / 2.5;
+                    this.rightKnee.rotation[0] = -Math.PI / 2.5;
+
+                    // Arms in meditation pose
+                    this.leftShoulder.rotation[0] = -0.3;
+                    this.leftShoulder.rotation[2] = 0.6;
+                    this.rightShoulder.rotation[0] = -0.3;
+                    this.rightShoulder.rotation[2] = -0.6;
+
+                    this.leftElbow.rotation[0] = -1.2;
+                    this.rightElbow.rotation[0] = -1.2;
+
+                    // Spoons slow rotation
+                    this.leftSpoonHandle.rotation[1] = this.time;
+                    this.rightSpoonHandle.rotation[1] = -this.time;
+
+                    // Head peaceful
+                    this.head.rotation[0] = -0.15;
+
+                    // Tail relaxed (with new segment)
+                    this.tailBase.rotation[0] = 0.8;
+                    this.tailMid1.rotation[0] = 0.1;
+                    this.tailMid2.rotation[0] = 0.05;
+                    this.tailMid3.rotation[0] = 0.03;
+                }
+            }
+
+            drawBodyPart(part, viewMatrix) {
+                if (!part.geometry) return;
+
+                const gl = this.gl;
+                const programInfo = this.programInfo;
+
+                // Bind position buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER, part.geometry.position);
+                gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+
+                // Bind normal buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER, part.geometry.normal);
+                gl.vertexAttribPointer(programInfo.attribLocations.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+
+                // Bind texture coordinates if available
+                if (part.geometry.texCoord) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, part.geometry.texCoord);
+                    gl.vertexAttribPointer(programInfo.attribLocations.texCoord, 2, gl.FLOAT, false, 0, 0);
+                    gl.enableVertexAttribArray(programInfo.attribLocations.texCoord);
+                }
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, part.geometry.indices);
+
+                // Calculate matrices
+                const modelViewMatrix = mat4.create();
+                mat4.multiply(modelViewMatrix, viewMatrix, part.worldMatrix);
+
+                const normalMatrix = mat4.create();
+                mat4.invert(normalMatrix, modelViewMatrix);
+                mat4.transpose(normalMatrix, normalMatrix);
+
+                // Set uniforms
+                gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelViewMatrix);
+                gl.uniformMatrix4fv(programInfo.uniformLocations.normalMatrix, false, normalMatrix);
+                gl.uniform3fv(programInfo.uniformLocations.color, part.color);
+                gl.uniform3fv(programInfo.uniformLocations.secondaryColor, part.secondaryColor);
+                gl.uniform1f(programInfo.uniformLocations.shininess, part.shininess);
+                gl.uniform1f(programInfo.uniformLocations.metallic, part.metallic);
+                gl.uniform1i(programInfo.uniformLocations.materialType, part.materialType);
+
+                // Draw
+                gl.drawElements(gl.TRIANGLES, part.geometry.indexCount, gl.UNSIGNED_SHORT, 0);
+            }
+
+            drawHierarchy(part, viewMatrix) {
+                if (part.geometry) {
+                    this.drawBodyPart(part, viewMatrix);
+                }
+
+                for (const child of part.children) {
+                    this.drawHierarchy(child, viewMatrix);
+                }
+            }
+
+            render() {
+                const gl = this.gl;
+
+                // Ensure viewport matches canvas size
+                gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+                // Animate
+                this.animate();
+
+                // Update hierarchy
+                this.root.updateLocalMatrix();
+                this.root.updateWorldMatrix();
+
+                for (const child of this.root.children) {
+                    child.updateLocalMatrix();
+                    child.updateWorldMatrix(this.root.worldMatrix);
+                    this.updateHierarchyMatrices(child);
+                }
+
+                // Clear
+                gl.clearColor(0.05, 0.03, 0.15, 1.0);
+                gl.clearDepth(1.0);
+                gl.enable(gl.DEPTH_TEST);
+                gl.depthFunc(gl.LEQUAL);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                // Use program
+                gl.useProgram(this.program);
+
+                // Projection matrix
+                const projectionMatrix = mat4.create();
+                const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+                mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 0.1, 100.0);
+                gl.uniformMatrix4fv(this.programInfo.uniformLocations.projectionMatrix, false, projectionMatrix);
+
+                // View matrix
+                const viewMatrix = mat4.create();
+                mat4.translate(viewMatrix, viewMatrix, [0, -1, -this.camera.distance]);
+                mat4.rotate(viewMatrix, viewMatrix, this.camera.rotationX, [1, 0, 0]);
+                mat4.rotate(viewMatrix, viewMatrix, this.camera.rotationY, [0, 1, 0]);
+
+                // Lighting
+                const lightX = Math.cos(this.time * 0.5) * 10;
+                const lightZ = Math.sin(this.time * 0.5) * 10;
+                gl.uniform3fv(this.programInfo.uniformLocations.lightPosition, [lightX, 12, lightZ]);
+                gl.uniform3fv(this.programInfo.uniformLocations.ambientLight, [0.35, 0.32, 0.40]);
+                gl.uniform1f(this.programInfo.uniformLocations.time, this.time);
+
+                // Draw
+                this.drawHierarchy(this.root, viewMatrix);
+
+                requestAnimationFrame(() => this.render());
+            }
+
+            updateHierarchyMatrices(part) {
+                for (const child of part.children) {
+                    child.updateLocalMatrix();
+                    child.updateWorldMatrix(part.worldMatrix);
+                    this.updateHierarchyMatrices(child);
+                }
+            }
+        }
+
+        // Start
+        window.addEventListener('load', () => {
+            new AlakazamApp();
+        });
+    </script>
+</body>
+</html>

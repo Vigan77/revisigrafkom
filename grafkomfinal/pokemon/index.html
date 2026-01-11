@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Abra in Enchanted Forest - 3D Interactive Scene</title>
+
+    <style>
+        body {
+            margin: 0;
+            background: linear-gradient(180deg, #87CEEB 0%, #E0F6FF 50%, #FFE5B4 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        #myCanvas {
+            display: block;
+            width: 100%;
+            height: 100vh;
+            cursor: grab;
+        }
+
+        #myCanvas:active {
+            cursor: grabbing;
+        }
+
+        .controls {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: white;
+            background: rgba(0, 0, 0, 0.75);
+            padding: 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            z-index: 100;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .controls strong {
+            color: #FFD700;
+            font-size: 16px;
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        .controls div {
+            margin: 5px 0;
+            opacity: 0.9;
+        }
+
+        .title {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            color: white;
+            background: rgba(0, 0, 0, 0.75);
+            padding: 20px 25px;
+            border-radius: 12px;
+            text-align: center;
+            z-index: 100;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .title h1 {
+            margin: 0;
+            font-size: 28px;
+            color: #FFD700;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            letter-spacing: 2px;
+        }
+
+        .title p {
+            margin: 8px 0 0 0;
+            font-size: 13px;
+            color: #E0E0E0;
+            opacity: 0.9;
+        }
+
+        .title .subtitle {
+            font-size: 11px;
+            color: #B0B0B0;
+            margin-top: 5px;
+            font-style: italic;
+        }
+
+        .info {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            color: white;
+            background: rgba(0, 0, 0, 0.75);
+            padding: 15px 20px;
+            border-radius: 12px;
+            font-size: 12px;
+            z-index: 100;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 300px;
+        }
+
+        .info strong {
+            color: #FFD700;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .controls, .title, .info {
+            animation: fadeIn 0.5s ease-out;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="controls">
+        <strong>🎮 FPS/Blender Controls</strong>
+        <div>🖱️ Mouse Drag: Rotate view</div>
+        <div>⌨️ W: Move forward</div>
+        <div>⌨️ S: Move backward</div>
+        <div>⌨️ A: Strafe left</div>
+        <div>⌨️ D: Strafe right</div>
+        <div>🖱️ Scroll: Fly forward/back</div>
+        <div>✨ Fly through the magical forest!</div>
+    </div>
+
+    <div class="title">
+        <h1>✨ ABRA, KADABRA & ALAKAZAM ✨</h1>
+        <p>Psychic Pokémon - Evolution Line</p>
+        <p class="subtitle">In the Enchanted Forest</p>
+    </div>
+
+    <div class="info">
+        <strong>🌟 Scene Features:</strong>
+        Complete evolution line! Abra, Kadabra, and Alakazam rendering in the same world with shared GL context
+    </div>
+
+    <canvas id="myCanvas"></canvas>
+
+    <!-- Abra Scripts -->
+    <script src="libs.js"></script>
+    <script src="helper.js"></script>
+    <script src="environment.js"></script>
+    <script src="object.js"></script>
+
+    <!-- Alakazam System - All files in alakazam/ subfolder -->
+    <script src="alakazam/gl-matrix.js"></script>
+    <script src="alakazam/helper.js"></script>
+    <script src="alakazam/RoundedTriangleObject.js"></script>
+    <script src="alakazam/RoundedIsoscelesTriangle.js"></script>
+    <script src="alakazam/BezierHand.js"></script>
+    <script src="alakazam/object.js"></script>
+    <script src="alakazam/script.js"></script>
+
+    <!-- Kadabra System - All files in kadabra/ subfolder -->
+    <script src="kadabra/gl-matrix.js"></script>
+    <script src="kadabra/helper.js"></script>
+    <script src="kadabra/object.js"></script>
+    <script src="kadabra/script.js"></script>
+
+    <!-- Main Script - handles Abra, Alakazam, and Kadabra -->
+    <script type="module" src="script.js"></script>
+</body>
+
+</html>
